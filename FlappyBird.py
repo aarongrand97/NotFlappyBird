@@ -1,40 +1,42 @@
-import sys, pygame	
+import sys, pygame, neat, os, random
 pygame.init()
 
+# SET UP WINDOW
 WIN_WIDTH = 300
 WIN_HEIGHT = 500
-
-
 win = pygame.display.set_mode((WIN_WIDTH, WIN_HEIGHT));
 pygame.display.set_caption("Not Flappy Bird")
 
 class Bird:
 	y_vel = 0.0
-	y_pos = WIN_HEIGHT/2
+	y_pos = WIN_HEIGHT/2 # PUT BIRD IN THE MIDDLE OF THE WINDOW
 	radius = 10
-	G = 0.1;
+	G = 0.0001; # 'GRAVITY'
 	
 	def __init__(self, y, currentObstacle):
 		self.y_pos = y
-		self.currentObstacle = currentObstacle
+		self.currentObstacle = currentObstacle # STORE THE NEAREST OBSTACLE SO ONLY HAS TO CHECK THAT ONE FOR COLLISION
 		
 	def draw(self, win):
-		pygame.draw.circle(win, (255,255,255), (int(WIN_WIDTH/2),int(self.y_pos)), self.radius)
+		pygame.draw.circle(win, (255,255,255), (int(WIN_WIDTH/2),int(self.y_pos)), self.radius) #DRAW BIRD
+		# DRAW LINES TO NEAREST OBSTACLE, JUST FOR SHOW REALLY
 		pygame.draw.line(win, (255,0,0), (WIN_WIDTH/2, self.y_pos), (self.currentObstacle.xpos, self.currentObstacle.top_height))
 		pygame.draw.line(win, (255,0,0), (WIN_WIDTH/2, self.y_pos), (self.currentObstacle.xpos, self.currentObstacle.y_start_bottom))
 		
 	def update(self):
-		self.y_pos = self.y_pos + self.y_vel;
-		self.y_vel = self.y_vel + 0.0001
+		self.y_pos = self.y_pos + self.y_vel
+		self.y_vel = self.y_vel + self.G
 	def jump(self):
-		self.y_vel = -0.1;
+		self.y_vel = -0.1
 	
-	def collide(self):
-		if (self.currentObstacle.xpos < (WIN_WIDTH/2)+self.radius and (self.y_pos-self.radius < self.currentObstacle.top_height or self.y_pos+self.radius > self.currentObstacle.y_start_bottom)):
+	def collide(self): # CHECK FOR COLLISION WITH OBSTACLE
+		if (self.currentObstacle.xpos < (WIN_WIDTH/2)+self.radius and 
+		(self.y_pos-self.radius < self.currentObstacle.top_height or 
+		self.y_pos+self.radius > self.currentObstacle.y_start_bottom)):
 			return True			
 		return False
 	
-	def offScreen(self):
+	def offScreen(self): # CHECK IF ABOVE/BELOW SCREEN
 		if(self.y_pos <= self.radius or self.y_pos > (WIN_HEIGHT-self.radius)):
 			return True
 		return False
@@ -52,7 +54,7 @@ class Obstacle:
 		self.bottom_height = height_base
 		self.top_height = WIN_HEIGHT - self.gap - self.bottom_height
 		self.y_start_bottom = WIN_HEIGHT - self.bottom_height
-		self.xpos = WIN_WIDTH
+		self.xpos = WIN_WIDTH # START THE OBSTACLE AT RIGHT HAND SIDE OF WINDOW
 		
 	def update(self):
 		self.xpos = self.xpos - self.vel
@@ -62,51 +64,101 @@ class Obstacle:
 		pygame.draw.rect(win, (255,255,255), (int(self.xpos), self.y_start_bottom, self.width, self.bottom_height))
 		
 
-def draw_window(win, bird, obstcl_list):
-	win.fill((0,0,0))
-	bird.draw(win)
+def draw_window(win, birds, obstcl_list):
+	win.fill((0,0,0)) # BLACK BACKGOUND
+	for bird in birds:
+		bird.draw(win)
 	for obs in obstcl_list:
 		obs.draw(win)
 	pygame.display.update()
 
-def main():
-	run = True	
-
+def main(genomes, config):
+	nets = []
+	ge = []
+	birds = []
 	
-	obstcl = Obstacle(100)
+	# CREATE FIRST OBSTACLE
+	obstcl = Obstacle(random.randint(20, 200))
 	obstcl_list = [obstcl];
-	bird = Bird(250, obstcl)
+	
+	# STORE THE NN's, BIRDS
+	for _, g in genomes:
+		net = neat.nn.FeedForwardNetwork.create(g,config)
+		nets.append(net)
+		birds.append(Bird(250, obstcl))
+		g.fitness = 0
+		ge.append(g)
+
+	run = True
 
 	while run:
 		for event in pygame.event.get():
 			if event.type == pygame.QUIT:
 				run = False
 				pygame.quit()
+			# NO LONGER RELEVANT	
 			if event.type == pygame.KEYDOWN:
 				if event.key == pygame.K_SPACE:
 					bird.jump()
 		
-		if(bird.currentObstacle.xpos < ((WIN_WIDTH/2 ) - bird.radius - bird.currentObstacle.width)):
-			newObs = Obstacle(100)
-			obstcl_list.append(newObs)
-			bird.currentObstacle = newObs
-			
-		bird.update()
-		if (bird.collide() == True):
-			p = 1
-			print("HIT")
-		if (bird.offScreen() == True):
-			p = 1
-			print("OFFSCREEN")
+		# STOP GENERATION IF ALL HAVE FAILED
+		if len(birds) < 1:
+			run = False
+			break
 		
+		for x, bird in enumerate(birds):
+			# GET OUTPUT FROM NN
+			output = nets[x].activate((bird.y_pos, abs(bird.y_pos - bird.currentObstacle.top_height), abs(bird.y_pos - bird.currentObstacle.y_start_bottom)))
+			if(output[0] > 0.5):
+				bird.jump()
+				
+			bird.update()
+			ge[x].fitness += 0.005 # REWARD FOR SURVIVING
+			if (bird.collide() == True):
+				ge[x].fitness -= 1 # PUNISH FOR CRASHING
+				birds.pop(x)
+				nets.pop(x)
+				ge.pop(x)
+			if (bird.offScreen() == True): #JUST GET RID IF OFF SCREEN
+				birds.pop(x)
+				nets.pop(x)
+				ge.pop(x)
+				
+		if len(birds) < 1:
+			run = False
+			break
+		
+		# GENERATE NEW OBSTACLE ONCE CURRENT HAS MOVED PAST BIRD
+		if(birds[0].currentObstacle.xpos < ((WIN_WIDTH/2 ) - birds[0].radius - birds[0].currentObstacle.width)):
+			newObs = Obstacle(random.randint(20, 200))
+			obstcl_list.append(newObs)
+			for bird in birds:
+				bird.currentObstacle = newObs
+			for g in ge:
+				g.fitness += 3 # LARGE REWARD FOR GOING THROUGH OBSTACLE
+		
+		# DELETE OBSTACLES THAT HAVE GONE THROUGH THE WINDOW
 		for obs in reversed(obstcl_list):
 			obs.update()
 			if obs.xpos < 0:
 				obstcl_list.remove(obs)
 
-		draw_window(win, bird, obstcl_list)
+		draw_window(win, birds, obstcl_list)
 
 	
-main()
 
+def run(config_path):
+	config = neat.config.Config(neat.DefaultGenome, neat.DefaultReproduction, neat.DefaultSpeciesSet, neat.DefaultStagnation, config_path)
+	
+	p = neat.Population(config)
+	
+	p.add_reporter(neat.StdOutReporter(True))
+	stats = neat.StatisticsReporter()
+	p.add_reporter(stats)
+	
+	winner = p.run(main,50)
 
+if __name__ == "__main__":
+	local_dir = os.path.dirname(__file__)
+	config_path = os.path.join(local_dir, "config-feedforward.txt")
+	run(config_path)
